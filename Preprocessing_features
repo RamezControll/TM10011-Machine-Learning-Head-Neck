@@ -1,0 +1,178 @@
+
+#%% Download packages
+from hn.load_data import load_data
+from sklearn.model_selection import train_test_split
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+from sklearn import decomposition
+from sklearn import datasets as ds
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.feature_selection import SelectKBest, mutual_info_classif
+from sklearn.preprocessing import StandardScaler
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+
+#%% Loading data
+data = load_data()
+print(f'The number of samples: {len(data.index)}')
+print(f'The number of columns: {len(data.columns)}')
+
+# %% Data characteristics
+full_dataset = data
+print(full_dataset["label"].unique())      
+print(full_dataset["label"].nunique())     
+print(full_dataset["label"].value_counts())
+
+
+# %% Splitting data into train_set and test_set
+train_set, test_set = train_test_split(full_dataset, test_size=0.20,random_state=42)
+
+#%% Data visualisation
+fig, ax = plt.subplots(figsize=(6, 5))
+ax.scatter(train_set.iloc[:, 6], train_set.iloc[:, 7])
+ax.set_xlabel(train_set.columns[6])
+ax.set_ylabel(train_set.columns[7])
+ax.set_title("Features tegenover elkaar geplot")
+
+# Features die waarschijnlijk goed onderscheid maken
+features_to_plot = [
+    'sf_volume_2D',
+    'hf_entropy',
+    'tf_GLRLM_RunEntropy',
+    'tf_GLSZM_ZoneEntropy',
+    'tf_GLRLM_RunLengthNonUniformity',
+    'tf_GLSZM_LargeAreaEmphasis'
+]
+
+sns.set(style="whitegrid")
+
+g = sns.pairplot(
+    data[features_to_plot + ['label']],
+    hue='label',
+    diag_kind='hist'
+)
+
+g.fig.set_size_inches(12,12)
+g.fig.suptitle("Feature vergelijking T12 vs T34", y=1.02)
+
+plt.show()
+
+#%% PREPROCESSING: haal alle features met nullen eruit
+def remove_zero_columns(train_set, test_set):
+    # labels apart bewaren
+    y_train = train_set["label"].copy()
+    y_test = test_set["label"].copy()
+
+    # alleen feature-kolommen bekijken
+    feature_cols = train_set.columns.difference(["ID", "label"])
+
+    # bepaal op basis van de trainset welke features géén nullen bevatten
+    cols_with_zeros = (train_set[feature_cols] == 0).any(axis=0)
+    kept_feature_cols = feature_cols[~cols_with_zeros]
+
+    # maak nieuwe train- en testsets met alleen de overgebleven features
+    X_train_clean = train_set[kept_feature_cols].copy()
+    X_test_clean = test_set[kept_feature_cols].copy()
+
+    return X_train_clean, X_test_clean, y_train, y_test, kept_feature_cols
+
+X_train_clean, X_test_clean, y_train, y_test, kept_feature_cols = remove_zero_columns(train_set, test_set)
+
+# Normaliseren
+scaler = StandardScaler()
+
+X_train_clean = pd.DataFrame(
+    scaler.fit_transform(X_train_clean.astype(float)),
+    columns=X_train_clean.columns,
+    index=X_train_clean.index
+)
+
+X_test_clean = pd.DataFrame(
+    scaler.transform(X_test_clean.astype(float)),
+    columns=X_test_clean.columns,
+    index=X_test_clean.index
+)
+print(X_train_clean)
+
+# %% PCA 
+def computePCA(train_set_clean,test_set_clean):
+    pca = decomposition.PCA(n_components=0.95)
+    pca.fit(train_set_clean)
+    data_train_pca = pca.transform(train_set_clean)
+    eigenvalues = pca.explained_variance_
+    eigenvalues = np.round(eigenvalues, 5)
+    data_set_pca = pca.transform(test_set_clean)
+
+    #variantie
+    total_variance = np.sum(eigenvalues)
+    variance_contribution = eigenvalues / total_variance
+    variance_contribution_perc = variance_contribution*100
+
+    return data_train_pca, eigenvalues, variance_contribution, variance_contribution_perc, data_set_pca
+
+X_train_pca, X_train_eigen, variance_contribution, variance_contribution_perc, X_test_pca = computePCA(X_train_clean, X_test_clean)
+
+print(X_train_pca.shape, X_test_pca.shape)
+print("Eigen values of data: ", X_train_eigen.tolist())
+print("Variance contribution of each principal component (%): ", variance_contribution_perc.tolist())
+
+
+# Compute the cumulative explained variance
+cumulative_variances = np.cumsum(variance_contribution[0:20])
+
+# Create the bar plot for individual variances
+plt.figure(figsize=(12, 7))
+bar = plt.bar(range(1, 21), variance_contribution[0:20], alpha=0.6, color='b', label='Individual Explained Variance')
+
+# Create the line plot for cumulative variance
+line = plt.plot(range(1, 21), cumulative_variances, marker='o', linestyle='-', color='r',
+                label='Cumulative Explained Variance')
+
+# Adding percentage values on top of bars and dots
+for i, (bar, cum_val) in enumerate(zip(bar, cumulative_variances)):
+    plt.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), f'{variance_contribution[0:20][i]*100:.1f}%',
+             ha='center', va='bottom')
+    plt.text(i+1, cum_val, f'{cum_val*100:.1f}%', ha='center', va='bottom')
+
+# Aesthetics for the plot
+plt.xlabel('Principal Components')
+plt.ylabel('Explained Variance')
+plt.title('Explained Variance by Different Principal Components')
+plt.xticks(range(1, 21))
+plt.legend(loc='upper left')
+plt.ylim(0, 1.1)  # extend y-axis limit to accommodate text labels
+plt.grid(True)
+plt.show()
+
+# %% Univariate testing
+selector_classif = SelectKBest(score_func=f_classif, k=10)
+
+# fit alleen op train
+X_train_sel = selector_classif.fit_transform(X_train_clean, y_train)
+
+print(X_train_sel.shape)
+selected_feature_names = X_train_clean.columns[selector_classif.get_support()]
+print(selected_feature_names)
+scores_classif = selector_classif.scores_
+
+for feature, score in zip(X_train_clean.columns, scores_classif):
+    print(feature, score)
+
+# %% Univariate testing met mutual 
+
+selector_mutual = SelectKBest(score_func=mutual_info_classif, k=10)
+X_train_sel = selector_mutual.fit_transform(X_train_clean, y_train)
+selected_feature_names = X_train_clean.columns[selector_mutual.get_support()]
+selected_feature_names = X_train_clean.columns[selector_mutual.get_support()]
+print(selected_feature_names)
+scores_mutual = selector_mutual.scores_
+
+for feature, score in zip(X_train_clean.columns, scores_mutual):
+   print(feature, score)
+print(selected_feature_names, scores_mutual)
+#%%
+
+# %%
