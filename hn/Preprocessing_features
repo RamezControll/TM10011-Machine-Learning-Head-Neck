@@ -1,178 +1,119 @@
-
-#%% Download packages
-from hn.load_data import load_data
-from sklearn.model_selection import train_test_split
-import numpy as np
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.decomposition import PCA
-from sklearn import decomposition
-from sklearn import datasets as ds
-from sklearn.feature_selection import SelectKBest, f_classif
-from sklearn.feature_selection import SelectKBest, mutual_info_classif
-from sklearn.preprocessing import StandardScaler
 import seaborn as sns
-import matplotlib.pyplot as plt
+import warnings
+from sklearn.model_selection import train_test_split
+from scipy.stats import shapiro, skew, kurtosis
+from sklearn.preprocessing import RobustScaler  
 
+warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 
-#%% Loading data
-data = load_data()
-print(f'The number of samples: {len(data.index)}')
-print(f'The number of columns: {len(data.columns)}')
+# Load data
+data_path = r"C:\Users\joell\OneDrive - Delft University of Technology\MACHINE LEARNING\Werkgroep\TM10011-Machine-Learning-Head-Neck\hn\HN_radiomicFeatures.csv"
+data = pd.read_csv(data_path)
+print("\nDataset loaded.")
 
-# %% Data characteristics
-full_dataset = data
-print(full_dataset["label"].unique())      
-print(full_dataset["label"].nunique())     
-print(full_dataset["label"].value_counts())
+# Prepare data
+data["Label_binary"] = data["label"].map({'T12': 0, 'T34': 1})
+features = data.drop(columns=["ID", "label", "Label_binary"]).columns
 
+# Split the dataset into training and testing sets
+train_data, test_data = train_test_split(data, test_size=0.2, random_state=42)
 
-# %% Splitting data into train_set and test_set
-train_set, test_set = train_test_split(full_dataset, test_size=0.20,random_state=42)
+# Print the number of features and samples
+print(f"Aantal features: {len(features)}")
+print(f"Aantal samples in de trainingsset: {len(train_data)}")
+print(f"Aantal samples in de testset: {len(test_data)}")
 
-#%% Data visualisation
-fig, ax = plt.subplots(figsize=(6, 5))
-ax.scatter(train_set.iloc[:, 6], train_set.iloc[:, 7])
-ax.set_xlabel(train_set.columns[6])
-ax.set_ylabel(train_set.columns[7])
-ax.set_title("Features tegenover elkaar geplot")
+#%% Distribution analysis on training set
+features_to_plot = features[:12]
 
-# Features die waarschijnlijk goed onderscheid maken
-features_to_plot = [
-    'sf_volume_2D',
-    'hf_entropy',
-    'tf_GLRLM_RunEntropy',
-    'tf_GLSZM_ZoneEntropy',
-    'tf_GLRLM_RunLengthNonUniformity',
-    'tf_GLSZM_LargeAreaEmphasis'
-]
+# Plot distributions
+n_cols = 3
+n_rows = (len(features_to_plot) // n_cols) + (1 if len(features_to_plot) % n_cols != 0 else 0)
 
-sns.set(style="whitegrid")
-
-g = sns.pairplot(
-    data[features_to_plot + ['label']],
-    hue='label',
-    diag_kind='hist'
-)
-
-g.fig.set_size_inches(12,12)
-g.fig.suptitle("Feature vergelijking T12 vs T34", y=1.02)
-
+plt.figure(figsize=(20, 5 * n_rows))
+for i, feature in enumerate(features_to_plot):
+    plt.subplot(n_rows, n_cols, i + 1)
+    for label_value in [0, 1]:
+        sns.histplot(train_data[train_data["Label_binary"] == label_value][feature], 
+                     bins=30, kde=True, label=f'label {label_value}', 
+                     element='step', stat='density')
+    plt.title(feature)
+    plt.legend()
+plt.tight_layout()
 plt.show()
 
-#%% PREPROCESSING: haal alle features met nullen eruit
-def remove_zero_columns(train_set, test_set):
-    # labels apart bewaren
-    y_train = train_set["label"].copy()
-    y_test = test_set["label"].copy()
+# Shapiro-Wilk test
+normality_scores = []
+for feature in features:
+    for label_value in [0, 1]:
+        filtered_data = train_data[train_data["Label_binary"] == label_value][feature]
+        stat, p_value = shapiro(filtered_data)
+        normality_scores.append({
+            'Feature': feature,
+            'label': label_value,
+            'P_Value': p_value,
+            'Normality': 'Normal' if p_value > 0.05 else 'Abnormal',
+        })
 
-    # alleen feature-kolommen bekijken
-    feature_cols = train_set.columns.difference(["ID", "label"])
+# Save normality test results
+normality_scores_df = pd.DataFrame(normality_scores)
+print(normality_scores_df)
+normality_scores_df.to_csv('normality_scores.csv', index=False)
 
-    # bepaal op basis van de trainset welke features géén nullen bevatten
-    cols_with_zeros = (train_set[feature_cols] == 0).any(axis=0)
-    kept_feature_cols = feature_cols[~cols_with_zeros]
+# Count normal and abnormal features
+normal_count = normality_scores_df['Normality'].value_counts().get('Normal', 0)
+abnormal_count = normality_scores_df['Normality'].value_counts().get('Abnormal', 0)
 
-    # maak nieuwe train- en testsets met alleen de overgebleven features
-    X_train_clean = train_set[kept_feature_cols].copy()
-    X_test_clean = test_set[kept_feature_cols].copy()
+total_features = normal_count + abnormal_count
+normal_percentage = (normal_count / total_features) * 100 if total_features else 0
+abnormal_percentage = (abnormal_count / total_features) * 100 if total_features else 0
 
-    return X_train_clean, X_test_clean, y_train, y_test, kept_feature_cols
+print(f"Percentage normale features: {normal_percentage:.2f}%")
+print(f"Percentage abnormale features: {abnormal_percentage:.2f}%")
 
-X_train_clean, X_test_clean, y_train, y_test, kept_feature_cols = remove_zero_columns(train_set, test_set)
+# Save training and testing sets to CSV
+train_data.to_csv('train_data.csv', index=False)
+test_data.to_csv('test_data.csv', index=False)
 
-# Normaliseren
-scaler = StandardScaler()
+print("Datasets zijn opgeslagen in 'train_data.csv' en 'test_data.csv'.")
 
-X_train_clean = pd.DataFrame(
-    scaler.fit_transform(X_train_clean.astype(float)),
-    columns=X_train_clean.columns,
-    index=X_train_clean.index
-)
+#%% Robust scaling
+scaler = RobustScaler()
+train_data[features] = scaler.fit_transform(train_data[features])
+test_data[features] = scaler.transform(test_data[features])
+#%% Distribution analysis after robust scaling (1e 12 features)
+features_to_plot = features[:12]
+n_cols = 3
+n_rows = (len(features_to_plot) // n_cols) + (1 if len(features_to_plot) % n_cols != 0 else 0)
 
-X_test_clean = pd.DataFrame(
-    scaler.transform(X_test_clean.astype(float)),
-    columns=X_test_clean.columns,
-    index=X_test_clean.index
-)
-print(X_train_clean)
-
-# %% PCA 
-def computePCA(train_set_clean,test_set_clean):
-    pca = decomposition.PCA(n_components=0.95)
-    pca.fit(train_set_clean)
-    data_train_pca = pca.transform(train_set_clean)
-    eigenvalues = pca.explained_variance_
-    eigenvalues = np.round(eigenvalues, 5)
-    data_set_pca = pca.transform(test_set_clean)
-
-    #variantie
-    total_variance = np.sum(eigenvalues)
-    variance_contribution = eigenvalues / total_variance
-    variance_contribution_perc = variance_contribution*100
-
-    return data_train_pca, eigenvalues, variance_contribution, variance_contribution_perc, data_set_pca
-
-X_train_pca, X_train_eigen, variance_contribution, variance_contribution_perc, X_test_pca = computePCA(X_train_clean, X_test_clean)
-
-print(X_train_pca.shape, X_test_pca.shape)
-print("Eigen values of data: ", X_train_eigen.tolist())
-print("Variance contribution of each principal component (%): ", variance_contribution_perc.tolist())
-
-
-# Compute the cumulative explained variance
-cumulative_variances = np.cumsum(variance_contribution[0:20])
-
-# Create the bar plot for individual variances
-plt.figure(figsize=(12, 7))
-bar = plt.bar(range(1, 21), variance_contribution[0:20], alpha=0.6, color='b', label='Individual Explained Variance')
-
-# Create the line plot for cumulative variance
-line = plt.plot(range(1, 21), cumulative_variances, marker='o', linestyle='-', color='r',
-                label='Cumulative Explained Variance')
-
-# Adding percentage values on top of bars and dots
-for i, (bar, cum_val) in enumerate(zip(bar, cumulative_variances)):
-    plt.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), f'{variance_contribution[0:20][i]*100:.1f}%',
-             ha='center', va='bottom')
-    plt.text(i+1, cum_val, f'{cum_val*100:.1f}%', ha='center', va='bottom')
-
-# Aesthetics for the plot
-plt.xlabel('Principal Components')
-plt.ylabel('Explained Variance')
-plt.title('Explained Variance by Different Principal Components')
-plt.xticks(range(1, 21))
-plt.legend(loc='upper left')
-plt.ylim(0, 1.1)  # extend y-axis limit to accommodate text labels
-plt.grid(True)
+# Plotten
+plt.figure(figsize=(20, 5 * n_rows))
+for i, feature in enumerate(features_to_plot):
+    plt.subplot(n_rows, n_cols, i + 1)
+    for label_value in [0,1]:
+        sns.histplot(train_data[train_data["Label_binary"] == label_value][feature], 
+                     bins=30, kde=True, label=f'label {label_value}', 
+                     element='step', stat='density')
+    plt.title(f'Distributie van {feature} na Robust Scaling')
+    plt.legend()
+plt.tight_layout()
 plt.show()
+#%% Code splitsen in X en Y
+X_train, y_train = train_data[features], train_data["Label_binary"]
 
-# %% Univariate testing
-selector_classif = SelectKBest(score_func=f_classif, k=10)
+#%% Alle features met 0 variantie verwijderen
+num_samples = train_data.shape[0]
+num_features = train_data.shape[1]
 
-# fit alleen op train
-X_train_sel = selector_classif.fit_transform(X_train_clean, y_train)
+# Print the results
+print(f"Aantal samples na filtering: {num_samples}")
+print(f"Aantal features na filtering: {num_features}")
 
-print(X_train_sel.shape)
-selected_feature_names = X_train_clean.columns[selector_classif.get_support()]
-print(selected_feature_names)
-scores_classif = selector_classif.scores_
+#%% Opslaan in csv bestanden
+train_data.to_csv('train_data.csv', index=False)
+test_data.to_csv('test_data.csv', index=False)
 
-for feature, score in zip(X_train_clean.columns, scores_classif):
-    print(feature, score)
-
-# %% Univariate testing met mutual 
-
-selector_mutual = SelectKBest(score_func=mutual_info_classif, k=10)
-X_train_sel = selector_mutual.fit_transform(X_train_clean, y_train)
-selected_feature_names = X_train_clean.columns[selector_mutual.get_support()]
-selected_feature_names = X_train_clean.columns[selector_mutual.get_support()]
-print(selected_feature_names)
-scores_mutual = selector_mutual.scores_
-
-for feature, score in zip(X_train_clean.columns, scores_mutual):
-   print(feature, score)
-print(selected_feature_names, scores_mutual)
-#%%
-
-# %%
+print("Datasets zijn opgeslagen in 'train_data.csv' en 'test_data.csv'.")
