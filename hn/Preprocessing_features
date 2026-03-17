@@ -6,18 +6,19 @@ import warnings
 from sklearn.model_selection import train_test_split
 from scipy.stats import shapiro, skew, kurtosis
 from sklearn.preprocessing import RobustScaler  
+from sklearn.feature_selection import VarianceThreshold
+import joblib
 
 warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 
 # Load data
-data_path = r"C:\Users\joell\OneDrive - Delft University of Technology\MACHINE LEARNING\Werkgroep\TM10011-Machine-Learning-Head-Neck\hn\HN_radiomicFeatures.csv"
+data_path = '../../TM10011-Machine-Learning-Head-Neck/hn/HN_radiomicFeatures.csv'
 data = pd.read_csv(data_path)
 print("\nDataset loaded.")
 
 # Prepare data
 data["Label_binary"] = data["label"].map({'T12': 0, 'T34': 1})
 features = data.drop(columns=["ID", "label", "Label_binary"]).columns
-
 # Split the dataset into training and testing sets
 train_data, test_data = train_test_split(data, test_size=0.2, random_state=42)
 
@@ -71,8 +72,8 @@ total_features = normal_count + abnormal_count
 normal_percentage = (normal_count / total_features) * 100 if total_features else 0
 abnormal_percentage = (abnormal_count / total_features) * 100 if total_features else 0
 
-print(f"Percentage normale features: {normal_percentage:.2f}%")
-print(f"Percentage abnormale features: {abnormal_percentage:.2f}%")
+print(f"Percentage normal features: {normal_percentage:.2f}%")
+print(f"Percentage abnormal features: {abnormal_percentage:.2f}%")
 
 # Save training and testing sets to CSV
 train_data.to_csv('train_data.csv', index=False)
@@ -102,18 +103,44 @@ for i, feature in enumerate(features_to_plot):
 plt.tight_layout()
 plt.show()
 #%% Code splitsen in X en Y
-X_train, y_train = train_data[features], train_data["Label_binary"]
+X_train, Y_train = train_data[features], train_data["Label_binary"]
+X_test, Y_test = test_data[features], test_data["Label_binary"]
 
 #%% Alle features met 0 variantie verwijderen
 num_samples = train_data.shape[0]
 num_features = train_data.shape[1]
 
+selector = VarianceThreshold(threshold=0.1)
+selector.fit(X_train)
+
+selected_features = features[selector.get_support()]
+
+X_train = pd.DataFrame(selector.transform(X_train), columns=selected_features)
+X_test = pd.DataFrame(selector.transform(X_test), columns=selected_features)
+
 # Print the results
-print(f"Aantal samples na filtering: {num_samples}")
-print(f"Aantal features na filtering: {num_features}")
+num_removed = len(features) - len(selected_features)
+print(f"Features verwijderd: {num_removed}")
+print(f"Features overgebleven: {len(selected_features)}")
+
+print(pd.Series(X_train.var()).describe())
 
 #%% Opslaan in csv bestanden
 train_data.to_csv('train_data.csv', index=False)
 test_data.to_csv('test_data.csv', index=False)
 
 print("Datasets zijn opgeslagen in 'train_data.csv' en 'test_data.csv'.")
+
+
+#%% Opslaan in een dump om te gebruiken in de pipeline in andere file
+
+# Save everything needed for the pipeline
+joblib.dump({
+    'X_train': X_train,
+    'X_test': X_test,
+    'Y_train': Y_train,
+    'Y_test': Y_test,
+    'selected_features': selected_features
+}, 'preprocessed_data.pkl')
+
+print("Data saved to 'preprocessed_data.pkl'")
