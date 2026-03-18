@@ -7,3 +7,4 @@ def load_data():
     data = pd.read_csv(os.path.join(this_directory, 'HN_radiomicFeatures.csv'), index_col=0)
 
     return data
+

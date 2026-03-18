@@ -140,7 +140,7 @@ joblib.dump({
     'X_test': X_test,
     'Y_train': Y_train,
     'Y_test': Y_test,
-    'selected_features': selected_features
+    'features': selected_features
 }, 'preprocessed_data.pkl')
 
 print("Data saved to 'preprocessed_data.pkl'")
