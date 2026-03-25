@@ -29,7 +29,7 @@ print(f'Aantal kolommen: {len(data.columns)}')
 
 #%% ── Data voorbereiden ───────────────────────────────────────────────────────
 data["Label_binary"] = data["label"].map({'T12': 0, 'T34': 1})
-features = data.drop(columns=["ID", "label", "Label_binary"]).columns
+features = data.drop(columns=["label", "Label_binary"]).columns
 
 train_data, test_data = train_test_split(data, test_size=0.2, random_state=42)
 train_data = train_data.reset_index(drop=True)
