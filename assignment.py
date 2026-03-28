@@ -7,16 +7,12 @@ from sklearn.base import clone, BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
 from sklearn.feature_selection import VarianceThreshold, RFE, SelectFromModel
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import (StratifiedKFold, RandomizedSearchCV,
-                                     validation_curve, GridSearchCV,
-                                     cross_val_predict, train_test_split)
+from sklearn.model_selection import StratifiedKFold, GridSearchCV, train_test_split, learning_curve
 from sklearn.preprocessing import RobustScaler
 from sklearn.svm import SVC
-from sklearn.linear_model import LogisticRegression, Lasso
-from sklearn.metrics import roc_curve, auc, ConfusionMatrixDisplay, confusion_matrix, classification_report
-from xgboost import XGBClassifier
+from sklearn.linear_model import Lasso
+from sklearn.metrics import roc_curve, auc, confusion_matrix, classification_report
 from mrmr import mrmr_classif
-from matplotlib.patches import Patch
 from scipy.stats import shapiro
 from hn.load_data import load_data
 
@@ -115,15 +111,15 @@ pipeline = Pipeline([
 ])
 
 
-#%% ── Finale GridSearchCV ─────────────────────────────────────────────────────
+#%% ── Final GridSearchCV ─────────────────────────────────────────────────────
 param_grid_final = [
-    # ── RFE + SVM — beste en stabielste model ─────────────────────────
+    # ── RFE + SVM ─────────────────────────────────────────────────────
     {
         'selector': [RFE(estimator=RandomForestClassifier(random_state=42))],
         'selector__n_features_to_select': [25, 30, 35],
         'selector__step': [1],
         'clf': [SVC(probability=True, random_state=42)],
-        'clf__C': [0.3, 0.5, 0.75, 1.0, 2.0, 5.0],
+        'clf__C': [0.3, 0.5, 0.75, 1.0, 2.0],
         'clf__kernel': ['rbf'],
         'clf__gamma': ['scale'],
     },
@@ -150,9 +146,9 @@ param_grid_final = [
     {
         'selector': [SelectFromModel(Lasso(max_iter=10000))],
         'selector__estimator__alpha': [0.001, 0.005, 0.01],
-        'selector__max_features': [12, 15, 18],
+        'selector__max_features': [12, 15, 18, 25],
         'clf': [SVC(probability=True, random_state=42)],
-        'clf__C': [0.3, 0.5, 1.0, 2.0, 5.0],
+        'clf__C': [0.3, 0.5, 1.0, 2.0],
         'clf__kernel': ['rbf'],
         'clf__gamma': ['scale'],
     },
@@ -174,32 +170,14 @@ print("Best parameters:", grid_search.best_params_)
 print("Best CV AUC:", grid_search.best_score_)
 
 
-#%% ── Extract results and best model info ─────────────────────────────────────
+#%% ── Results extracten ─────────────────────────────────────────────────────────
 results = pd.DataFrame(grid_search.cv_results_)
 
 best_pipeline = grid_search.best_estimator_
-best_clf      = best_pipeline.named_steps['clf']
-best_selector = best_pipeline.named_steps['selector']
-
-variance_step         = best_pipeline.named_steps['variance']
-features_after_variance = features[variance_step.get_support()]
-
-if hasattr(best_selector, 'support_'):
-    selected_feature_names = features_after_variance[best_selector.support_]
-elif hasattr(best_selector, 'selected_features_'):
-    selected_feature_names = pd.Index(best_selector.selected_features_)
-else:
-    selected_feature_names = features_after_variance
-
-if hasattr(best_clf, 'feature_importances_'):
-    importances = best_clf.feature_importances_
-    indices = np.argsort(importances)[::-1]
 
 def get_selector_name(params):
     selector = params.get('selector', 'passthrough')
-    if selector == 'passthrough':
-        return 'None'
-    elif isinstance(selector, RFE):
+    if isinstance(selector, RFE):
         return 'RFE'
     elif isinstance(selector, MRMRSelector):
         return 'mRMR'
@@ -215,81 +193,27 @@ results['selector_name'] = results['params'].apply(get_selector_name)
 results['clf_name']      = results['params'].apply(get_clf_name)
 
 
-#%% ── Report-quality plots (trainingsset) ─────────────────────────────────────
-fig, axes = plt.subplots(1, 3, figsize=(22, 7))
+#%% ── Beste modellen per combinatie opzoeken ─────────────────────────────────
+def get_best_model(selector_name, clf_name, n=3):
+    subset = results[
+        (results['selector_name'] == selector_name) &
+        (results['clf_name'] == clf_name)
+    ].sort_values('mean_test_score', ascending=False).head(n)
+    print(f"\nBeste {n} modellen voor {selector_name} + {clf_name}:")
+    print(subset[['selector_name', 'clf_name', 'mean_test_score', 'std_test_score']])
+    print(f"Rijnummers: {subset.index.tolist()}")
+    return subset
 
-selectors   = results['selector_name'].unique()
-classifiers = results['clf_name'].unique()
-x     = np.arange(len(selectors))
-width = 0.2
-colors = ['#2196F3', '#4CAF50', '#FF9800', '#E91E63']
-
-for i, clf_name in enumerate(classifiers):
-    means = []
-    for sel in selectors:
-        subset = results[(results['selector_name'] == sel) &
-                         (results['clf_name'] == clf_name)]['mean_test_score']
-        means.append(subset.mean() if len(subset) > 0 else 0)
-    axes[0].bar(x + i * width, means, width, label=clf_name, color=colors[i], alpha=0.8)
-
-axes[0].set_xticks(x + width * (len(classifiers) - 1) / 2)
-axes[0].set_xticklabels(selectors, fontsize=10)
-axes[0].set_ylabel('Mean CV AUC')
-axes[0].set_title('CV AUC by Selector and Classifier')
-axes[0].legend(fontsize=8)
-axes[0].set_ylim(0.5, 1.0)
-
-y_prob_cv = cross_val_predict(
-    best_pipeline, X_train, Y_train, cv=cv, method='predict_proba')[:, 1]
-fpr, tpr, _ = roc_curve(Y_train, y_prob_cv)
-roc_auc_cv  = auc(fpr, tpr)
-axes[1].plot(fpr, tpr, color='#2196F3', lw=2,
-             label=f'Best model (AUC = {roc_auc_cv:.3f})')
-axes[1].plot([0, 1], [0, 1], 'k--', lw=1, label='Random classifier')
-axes[1].set_xlabel('False Positive Rate')
-axes[1].set_ylabel('True Positive Rate')
-axes[1].set_title('ROC Curve - Best Model (CV)')
-axes[1].legend(fontsize=9)
-
-n_top = min(15, len(results))
-results_sorted = results.sort_values('mean_test_score', ascending=True).tail(n_top)
-colors_bar = ['#2196F3' if s == 'RFE' else
-               '#4CAF50' if s == 'mRMR' else
-               '#FF9800' if s == 'LASSO' else '#9E9E9E'
-               for s in results_sorted['selector_name']]
-axes[2].barh(range(n_top), results_sorted['mean_test_score'],
-             xerr=results_sorted['std_test_score'],
-             color=colors_bar, alpha=0.8)
-axes[2].set_yticks(range(n_top))
-axes[2].set_yticklabels([f"{row['selector_name']} + {row['clf_name']}"
-                          for _, row in results_sorted.iterrows()], fontsize=9)
-axes[2].set_xlabel('Mean CV AUC')
-axes[2].set_title(f'Top {n_top} Combinations')
-axes[2].set_xlim(0.5, 1.0)
-
-legend_elements = [Patch(facecolor='#2196F3', label='RFE'),
-                   Patch(facecolor='#4CAF50', label='mRMR'),
-                   Patch(facecolor='#FF9800', label='LASSO'),
-                   Patch(facecolor='#9E9E9E', label='None')]
-axes[2].legend(handles=legend_elements, fontsize=8)
-
-plt.suptitle('Pipeline Comparison - Feature Selection vs Classifier',
-             fontsize=14, fontweight='bold')
-plt.tight_layout()
-plt.show()
-
-print("\nTop 5 combinations:")
-print(results[['selector_name', 'clf_name', 'mean_test_score', 'std_test_score']]
-      .sort_values('mean_test_score', ascending=False).head(5))
+get_best_model('LASSO', 'SVC')
+get_best_model('RFE', 'SVC')
+get_best_model('RFE', 'RandomForestClassifier')
+get_best_model('mRMR', 'RandomForestClassifier')
 
 
-#%% ── Top N modellen selecteren ───────────────────────────────────────────────
-N = 4
+#%% ── Top modellen selecteren ────────────────────────────────────────────────
+selected_indices = [176, 169, 10, 35, 124]
 
-top_results = (results
-               .sort_values('mean_test_score', ascending=False)
-               .drop_duplicates(subset=['selector_name', 'clf_name'])
-               .head(N))
+top_results = results.loc[selected_indices]
 
 top_pipelines = []
 for _, row in top_results.iterrows():
@@ -301,55 +225,110 @@ for _, row in top_results.iterrows():
         'pipeline': pipeline_copy,
         'selector': row['selector_name'],
         'clf': row['clf_name'],
-        'cv_auc': row['mean_test_score']
+        'cv_auc': row['mean_test_score'],
+        'cv_std': row['std_test_score'],
+        'params': row['params']
     })
 
-print("\nTop N modellen geselecteerd:")
-print("-" * 60)
 for i, model in enumerate(top_pipelines):
-    print(f"{i+1}. {model['selector']} + {model['clf']}")
-    print(f"   CV AUC: {model['cv_auc']:.4f}")
     params     = top_results.iloc[i]['params']
-    clf_params = {k: v for k, v in params.items() if k.startswith('clf__')}
-    sel_params = {k: v for k, v in params.items()
+    clf_params = {k.replace('clf__', ''): v for k, v in params.items() if k.startswith('clf__')}
+    sel_params = {k.replace('selector__', ''): v for k, v in params.items()
                   if k.startswith('selector__') and k != 'selector'}
+    print(f"{i+1}. {model['selector']} + {model['clf']}")
+    print(f"   CV AUC: {model['cv_auc']:.4f} ± {model['cv_std']:.4f}")
     print(f"   Selector params: {sel_params}")
     print(f"   Classifier params: {clf_params}")
     print()
 
-
-#%% ── Finale evaluatie op testset ────────────────────────────────────────────
-# DIT BLOK ALLEEN UITVOEREN ALS HET MODEL DEFINITIEF IS
-
-fig, axes = plt.subplots(N, 3, figsize=(22, N * 6))
+#%% ── Plot 1: ROC curves op testset ──────────────────────────────────────────
+fig, axes = plt.subplots(1, len(top_pipelines), figsize=(22, 5))
 
 for i, model in enumerate(top_pipelines):
     pipeline_i = model['pipeline']
     label      = f"{model['selector']} + {model['clf']}"
 
     y_prob_test = pipeline_i.predict_proba(X_test)[:, 1]
-    y_pred_test = pipeline_i.predict(X_test)
-
-    # ── ROC curve ─────────────────────────────────────────────────────
     fpr, tpr, _ = roc_curve(Y_test, y_prob_test)
-    test_auc = auc(fpr, tpr)
-    axes[i, 0].plot(fpr, tpr, color='#2196F3', lw=2,
-                    label=f'Test AUC = {test_auc:.3f}')
-    axes[i, 0].plot([0, 1], [0, 1], 'k--', lw=1, label='Random classifier')
-    axes[i, 0].set_xlabel('False Positive Rate')
-    axes[i, 0].set_ylabel('True Positive Rate')
-    axes[i, 0].set_title(f'ROC Curve - {label}')
-    axes[i, 0].legend()
+    test_auc    = auc(fpr, tpr)
 
-    # ── Confusion matrix ───────────────────────────────────────────────
+    n_bootstrap = 1000
+    boot_aucs = []
+    boot_tprs = []
+    mean_fpr  = np.linspace(0, 1, 100)
+    rng = np.random.RandomState(42)
+
+    for _ in range(n_bootstrap):
+        indices = rng.randint(0, len(Y_test), len(Y_test))
+        if len(np.unique(Y_test.iloc[indices])) < 2:
+            continue
+        fpr_b, tpr_b, _ = roc_curve(Y_test.iloc[indices], y_prob_test[indices])
+        boot_aucs.append(auc(fpr_b, tpr_b))
+        boot_tprs.append(np.interp(mean_fpr, fpr_b, tpr_b))
+
+    boot_tprs  = np.array(boot_tprs)
+    tpr_lower  = np.percentile(boot_tprs, 2.5, axis=0)
+    tpr_upper  = np.percentile(boot_tprs, 97.5, axis=0)
+    auc_lower  = np.percentile(boot_aucs, 2.5)
+    auc_upper  = np.percentile(boot_aucs, 97.5)
+
+    axes[i].plot(fpr, tpr, color='#2196F3', lw=2,
+                 label=f'Test AUC = {test_auc:.3f}\n(95% CI: {auc_lower:.3f}–{auc_upper:.3f})')
+    axes[i].fill_between(mean_fpr, tpr_lower, tpr_upper,
+                          color='#2196F3', alpha=0.2, label='95% Bootstrap CI')
+    axes[i].plot([0, 1], [0, 1], 'k--', lw=1, label='Chance level (AUC = 0.5)')
+    axes[i].set_xlabel('False Positive Rate')
+    axes[i].set_ylabel('True Positive Rate')
+    axes[i].set_title(label)
+    axes[i].legend(fontsize=8)
+
+plt.tight_layout()
+plt.show()
+
+
+#%% ── Plot 2: Confusion matrices ─────────────────────────────────────────────
+fig, axes = plt.subplots(1, len(top_pipelines), figsize=(22, 4))
+
+for i, model in enumerate(top_pipelines):
+    pipeline_i  = model['pipeline']
+    label       = f"{model['selector']} + {model['clf']}"
+    y_pred_test = pipeline_i.predict(X_test)
     cm = confusion_matrix(Y_test, y_pred_test)
-    ConfusionMatrixDisplay(cm, display_labels=['T12', 'T34']).plot(
-        ax=axes[i, 1], colorbar=False)
-    axes[i, 1].set_title(f'Confusion Matrix - {label}')
 
-    # ── Feature tabel ──────────────────────────────────────────────────
-    selector_i      = pipeline_i.named_steps['selector']
-    variance_i      = pipeline_i.named_steps['variance']
+    cm_data = [
+        ['', 'Predicted T12', 'Predicted T34'],
+        ['Actual T12', cm[0, 0], cm[0, 1]],
+        ['Actual T34', cm[1, 0], cm[1, 1]],
+    ]
+
+    axes[i].axis('off')
+    table = axes[i].table(
+        cellText=cm_data[1:],
+        colLabels=cm_data[0],
+        loc='center',
+        cellLoc='center'
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(11)
+    table.scale(1.2, 2.5)
+    table[1, 1].set_facecolor('#4CAF50')
+    table[2, 2].set_facecolor('#4CAF50')
+    table[1, 2].set_facecolor('#FF9800')
+    table[2, 1].set_facecolor('#FF9800')
+    axes[i].set_title(label, fontsize=10, fontweight='bold')
+
+plt.tight_layout()
+plt.show()
+
+
+#%% ── Plot 3: Feature tabellen ───────────────────────────────────────────────
+fig, axes = plt.subplots(1, len(top_pipelines), figsize=(22, 8))
+
+for i, model in enumerate(top_pipelines):
+    pipeline_i         = model['pipeline']
+    label              = f"{model['selector']} + {model['clf']}"
+    selector_i         = pipeline_i.named_steps['selector']
+    variance_i         = pipeline_i.named_steps['variance']
     features_after_var = features[variance_i.get_support()]
 
     if hasattr(selector_i, 'support_'):
@@ -357,31 +336,44 @@ for i, model in enumerate(top_pipelines):
         if hasattr(pipeline_i.named_steps['clf'], 'feature_importances_'):
             importances_i = pipeline_i.named_steps['clf'].feature_importances_
             feat_df = pd.DataFrame({
-                'Feature': sel_features,
+                'Feature':    sel_features,
                 'Importance': importances_i
             }).sort_values('Importance', ascending=False).reset_index(drop=True)
         else:
             feat_df = pd.DataFrame({'Feature': sel_features})
+
     elif hasattr(selector_i, 'selected_features_'):
-        sel_features = list(selector_i.selected_features_)
-        feat_df = pd.DataFrame({'Feature': sel_features,
-                                'mRMR Rank': range(1, len(sel_features) + 1)})
+        sel_indices  = list(selector_i.selected_features_)
+        sel_features = [features_after_var[idx] for idx in sel_indices]
+        clf_i = pipeline_i.named_steps['clf']
+        if hasattr(clf_i, 'feature_importances_'):
+            feat_df = pd.DataFrame({
+                'Feature':    sel_features,
+                'Importance': clf_i.feature_importances_
+            }).sort_values('Importance', ascending=False).reset_index(drop=True)
+        else:
+            feat_df = pd.DataFrame({
+                'Feature':   sel_features,
+                'mRMR Rank': range(1, len(sel_features) + 1)
+            })
+
     elif hasattr(selector_i, 'get_support'):
         sel_features = features_after_var[selector_i.get_support()]
-        coefs = np.abs(selector_i.estimator_.coef_)
+        coefs     = np.abs(selector_i.estimator_.coef_)
         sel_coefs = coefs[selector_i.get_support()]
         feat_df = pd.DataFrame({
-            'Feature': sel_features,
+            'Feature':      sel_features,
             'LASSO |coef|': sel_coefs
         }).sort_values('LASSO |coef|', ascending=False).reset_index(drop=True)
+
     else:
         feat_df = pd.DataFrame({'Feature': features_after_var})
 
-    axes[i, 2].axis('off')
+    axes[i].axis('off')
     n_show     = min(15, len(feat_df))
     table_data = feat_df.head(n_show).values.tolist()
     col_labels = feat_df.columns.tolist()
-    table = axes[i, 2].table(
+    table = axes[i].table(
         cellText=[[str(round(v, 4)) if isinstance(v, float) else str(v)
                    for v in row] for row in table_data],
         colLabels=col_labels,
@@ -391,12 +383,13 @@ for i, model in enumerate(top_pipelines):
     table.auto_set_font_size(False)
     table.set_fontsize(8)
     table.auto_set_column_width(col=list(range(len(col_labels))))
-    axes[i, 2].set_title(f'Top features - {label}', fontsize=10, fontweight='bold')
+    axes[i].set_title(label, fontsize=10, fontweight='bold')
 
-plt.suptitle('Finale Evaluatie op Testset', fontsize=14, fontweight='bold')
 plt.tight_layout()
 plt.show()
 
+
+#%% ── Classification reports ─────────────────────────────────────────────────
 print("\nClassification Reports:")
 print("=" * 60)
 for model in top_pipelines:
@@ -407,8 +400,50 @@ for model in top_pipelines:
     print(classification_report(Y_test, y_pred_test, target_names=['T12', 'T34']))
 
 
+#%% ── Learning curves ────────────────────────────────────────────────────────
+X_all = pd.concat([X_train, X_test]).reset_index(drop=True)
+Y_all = pd.concat([Y_train, Y_test]).reset_index(drop=True)
+
+fig, axes = plt.subplots(1, len(top_pipelines), figsize=(22, 5))
+
+for i, model in enumerate(top_pipelines):
+    label = f"{model['selector']} + {model['clf']}"
+
+    train_sizes_abs, train_scores, val_scores = learning_curve(
+        model['pipeline'],
+        X_all, Y_all,
+        train_sizes=np.linspace(0.1, 1.0, 15),
+        cv=5,
+        scoring='roc_auc',
+        n_jobs=-1
+    )
+
+    train_mean     = train_scores.mean(axis=1)
+    val_mean       = val_scores.mean(axis=1)
+    train_ci_lower = np.percentile(train_scores, 2.5, axis=1)
+    train_ci_upper = np.percentile(train_scores, 97.5, axis=1)
+    val_ci_lower   = np.percentile(val_scores, 2.5, axis=1)
+    val_ci_upper   = np.percentile(val_scores, 97.5, axis=1)
+
+    axes[i].plot(train_sizes_abs, train_mean, color='#1f77b4', lw=2, label='Train AUC')
+    axes[i].fill_between(train_sizes_abs, train_ci_lower, train_ci_upper,
+                          alpha=0.2, color='#1f77b4', label='Train 95% CI')
+    axes[i].plot(train_sizes_abs, val_mean, color='#ff7f0e', lw=2, label='CV AUC')
+    axes[i].fill_between(train_sizes_abs, val_ci_lower, val_ci_upper,
+                          alpha=0.2, color='#ff7f0e', label='CV 95% CI')
+
+    axes[i].set_xlabel('Number of training samples')
+    axes[i].set_ylabel('AUC')
+    axes[i].set_title(label)
+    axes[i].legend(fontsize=7)
+    axes[i].set_ylim(0.5, 1.0)
+
+plt.tight_layout()
+plt.show()
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# EXPLORATIE — Validatiecurves en RandomizedSearch (niet nodig voor finale run)
+# Exploratieve fase — Validatiecurves en RandomizedSearch 
 # ══════════════════════════════════════════════════════════════════════════════
 
 # #%% ── Helper function for validation curve plots ─────────────────────────────
@@ -449,7 +484,7 @@ for model in top_pipelines:
 
 # #%% ── Step 2: mRMR fit ───────────────────────────────────────────────────────
 # Y_train_reset = pd.Series(Y_train).reset_index(drop=True)
-# mrmr_selector = MRMRSelector(n_features_to_select=45)
+# mrmr_selector = MRMRSelector(n_features_to_select=20)
 # mrmr_selector.fit(X_train, Y_train_reset)
 # X_train_mrmr = mrmr_selector.transform(X_train)
 # oob_scores_mrmr = []
